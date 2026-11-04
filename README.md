@@ -109,11 +109,11 @@ UpdateFlight меняет цену и/или статус. Отмена рейс
 | COMPOSE_PROJECT_NAME | soa-flight-booking; изоляция контейнеров и volumes |
 | BOOKING_PORT / FLIGHT_PORT | 8081 / 50051 на хосте |
 | FLIGHT_API_KEY | local-demo-key; одинаковый ключ обоих сервисов |
-| RPC_ATTEMPTS / RPC_BACKOFF | 3 попытки; паузы 100ms, 200ms |
+| RPC_ATTEMPTS / RPC_BACKOFF | До 3 вызовов invoker в interceptor; паузы 100ms, 200ms |
 | RPC_ATTEMPT_TIMEOUT / RPC_TIMEOUT | 500ms на попытку, 2s на логический RPC |
 | CB_FAILURE_THRESHOLD / CB_WINDOW | 5 последовательных инфраструктурных ошибок в окне 60s |
 | CB_OPEN_TIMEOUT | 15s до единственного пробного вызова |
-| HTTP_TIMEOUT / OPERATION_TIMEOUT | 8s на HTTP, 10s до восстановления зависшей CREATE |
+| HTTP_TIMEOUT / OPERATION_TIMEOUT | 8s на контекст обработки и чтение HTTP-запроса, 10s до восстановления зависшей CREATE |
 | RECOVERY_INTERVAL | 1s между проходами восстановления |
 
 Адреса БД задаются через DATABASE_URL отдельно для каждого приложения. Внутри Compose используются GRPC_ADDR=:50051, HEALTH_ADDR=:9090 у Flight, HTTP_ADDR=:8080 и FLIGHT_ADDR=flight:50051 у Booking. Redis-клиент получает REDIS_MASTER_NAME=flights и REDIS_SENTINEL_ADDRS с адресами трёх Sentinel.
@@ -128,4 +128,10 @@ make e2e-report
 make e2e-open
 ```
 
-E2E останавливает и перезапускает контейнеры своего Compose-проекта. Запускайте его в выделенном окружении, например с COMPOSE_PROJECT_NAME=soa-flight-booking-qa и свободными BOOKING_PORT/FLIGHT_PORT. Результаты Allure находятся в artifacts/e2e/<RUNID>/allure-results, HTML — рядом в allure-report. Указатель latest-run выбирает последний запуск. Наличие тестов и workflow не подтверждает их успешный прогон; фактический статус фиксируется в QA-документе.
+Лимит retry относится к попыткам приложения. В gRPC 1.85.0 WithDisableRetry отключает retry по service config, но сохраняет transparent retry для ещё не обработанного сервером запроса. Поэтому три вызова invoker и один логический HALF_OPEN probe не ограничивают абсолютное число сетевых передач.
+
+HTTP_TIMEOUT также ограничивает чтение тела запроса через server ReadTimeout. Синхронная компенсация после ошибки использует отдельный background-бюджет; полный ответ клиенту может занять больше 8s.
+
+У обращений к необязательному кешу отдельный фиксированный бюджет: до 50ms на GET и до 50ms на SET. Он оставляет время для PostgreSQL в пределах RPC deadline. Redis-клиент учитывает context deadline; внутренние retry кеша отключены.
+
+E2E останавливает и перезапускает контейнеры своего Compose-проекта. Запускайте его в выделенном окружении, например с COMPOSE_PROJECT_NAME=soa-flight-booking-qa и свободными BOOKING_PORT/FLIGHT_PORT. Результаты Allure находятся в artifacts/e2e/<RUNID>/allure-results, HTML — рядом в allure-report. Команда make e2e запускает именованный контейнер и после завершения копирует /artifacts через docker cp, в том числе при падении тестов. Это работает и с удалённым Docker context: bind mount каталога артефактов на хосте daemon не требуется. Исходный код выхода проваленных тестов сохраняется. Указатель latest-run выбирает последний запуск. Наличие тестов и workflow не подтверждает их успешный прогон; фактический статус фиксируется в QA-документе.
