@@ -6,6 +6,8 @@
 
 Исходники схем находятся в migrations/flight и migrations/booking, транспорт — в internal/transport, сценарии E2E — в tests/e2e.
 
+TestPublicPages и TestPublicRouting проверяют главную, OpenAPI и локальные файлы Swagger UI: GET/HEAD, ссылки, перенаправление /swagger → /swagger/, ответы 404 и 405.
+
 | № | Проверки | Ожидаемый результат |
 |---|---|---|
 | 1. gRPC | `make check`, TestInvalidRequests; E2E gRPC validation and not-found errors | Пять методов, Timestamp, enum, воспроизводимая генерация, коды ошибок |

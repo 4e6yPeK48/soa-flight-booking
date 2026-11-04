@@ -102,6 +102,13 @@ func writeFailure(w http.ResponseWriter, e *failure, op *operation) {
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", home)
+	mux.HandleFunc("GET /openapi.json", specification)
+	mux.Handle("GET /swagger", http.RedirectHandler("/swagger/", http.StatusPermanentRedirect))
+	swagger := http.FileServerFS(publicFiles)
+	for _, path := range []string{"/swagger/{$}", "/swagger/swagger-ui.css", "/swagger/swagger-ui-bundle.js"} {
+		mux.Handle("GET "+path, swagger)
+	}
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		if e := s.db.PingContext(r.Context()); e != nil {
 			writeFailure(w, storageFailure(), nil)

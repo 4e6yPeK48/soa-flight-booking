@@ -13,7 +13,6 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	flightv1 "github.com/mchupryna/soa-flight-booking/gen/flight/v1"
-	"github.com/mchupryna/soa-flight-booking/internal/api"
 	"github.com/mchupryna/soa-flight-booking/internal/booking"
 	"github.com/mchupryna/soa-flight-booking/internal/config"
 	"github.com/mchupryna/soa-flight-booking/internal/transport"
@@ -56,13 +55,7 @@ func run(logger *slog.Logger) error {
 	defer conn.Close()
 	app := booking.New(db, flightv1.NewFlightServiceClient(conn), logger, booking.Config{RequestTimeout: cfg.HTTPTimeout, OperationTimeout: cfg.OperationTimeout, RecoveryInterval: cfg.RecoveryInterval})
 	go app.RunRecovery(ctx)
-	mux := http.NewServeMux()
-	mux.Handle("/", app.Handler())
-	mux.HandleFunc("GET /openapi.json", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(api.OpenAPI)
-	})
-	server := &http.Server{Addr: cfg.HTTPAddr, Handler: mux, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: cfg.HTTPTimeout, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Addr: cfg.HTTPAddr, Handler: app.Handler(), ReadHeaderTimeout: 3 * time.Second, ReadTimeout: cfg.HTTPTimeout, IdleTimeout: 60 * time.Second}
 	errs := make(chan error, 1)
 	go func() { errs <- server.ListenAndServe() }()
 	logger.Info("booking started", "http", cfg.HTTPAddr)

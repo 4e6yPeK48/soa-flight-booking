@@ -16,9 +16,13 @@ curl --fail-with-body "http://127.0.0.1:${BOOKING_PORT:-8081}/health"
 docker compose down
 ```
 
-`make up` запускает проект в фоне и ждёт готовности. Логи: make logs; остановка: make down. Используется активный Docker context. Приложения собираются внутри Docker; на Apple Silicon Flyway работает через эмуляцию linux/amd64.
+`make up` запускает проект в фоне и ждёт готовности. Логи: make logs; остановка: make down. Приложения собираются внутри Docker; на Apple Silicon Flyway работает через эмуляцию linux/amd64.
+
+Для Colima с профилем distsys один раз выполните `direnv allow`: .envrc выбирает DOCKER_CONTEXT=colima-distsys. В уже открытом терминале нажмите Enter или повторно перейдите в каталог проекта, чтобы хук загрузил настройки. Без direnv задайте нужный Docker context вручную.
 
 Файл .env необязателен; настройки можно скопировать из [.env.example](.env.example). По умолчанию REST доступен на 127.0.0.1:8081, gRPC — на 127.0.0.1:50051. PostgreSQL и Redis доступны внутри Compose. Учебные пароли и API key рассчитаны на это окружение.
+
+Откройте [главную](http://127.0.0.1:8081/) или [Swagger UI](http://127.0.0.1:8081/swagger/) для REST-запросов из браузера. Если задан BOOKING_PORT, замените 8081 в адресе.
 
 ## REST
 

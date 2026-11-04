@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flight Booking API — Swagger UI</title>
+  <link rel="stylesheet" href="/swagger/swagger-ui.css">
+  <style>body { margin: 0; } header { padding: 1rem; font-family: system-ui, sans-serif; }</style>
+</head>
+<body>
+  <header><a href="/">На главную</a></header>
+  <main id="swagger-ui"></main>
+  <script src="/swagger/swagger-ui-bundle.js"></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      url: "/openapi.json",
+      dom_id: "#swagger-ui",
+      presets: [SwaggerUIBundle.presets.apis],
+      layout: "BaseLayout",
+      deepLinking: true,
+      validatorUrl: null,
+      queryConfigEnabled: false
+    });
+  </script>
+</body>
+</html>
