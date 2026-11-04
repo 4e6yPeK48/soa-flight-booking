@@ -200,13 +200,18 @@ services:
     environment:
       FLIGHT_TEST_DATABASE_URL: postgres://flight:flight-local@flight-db:5432/flight?sslmode=disable
       BOOKING_TEST_DATABASE_URL: postgres://booking:booking-local@booking-db:5432/booking?sslmode=disable
-      FLIGHT_TEST_REDIS_URL: redis://redis-master:6379
+      FLIGHT_TEST_REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      FLIGHT_TEST_REDIS_MASTER_NAME: flights
     depends_on:
       flight-migrate:
         condition: service_completed_successfully
       booking-migrate:
         condition: service_completed_successfully
-      redis-master:
+      sentinel-1:
+        condition: service_healthy
+      sentinel-2:
+        condition: service_healthy
+      sentinel-3:
         condition: service_healthy
 
   e2e:
@@ -214,6 +219,7 @@ services:
     command: [go, test, -count=1, -p=1, -parallel=1, -tags=e2e, ./e2e]
     environment:
       E2E_BASE_URL: http://booking:8080
+      E2E_HTTP_TIMEOUT: ${HTTP_TIMEOUT:-8s}
       E2E_FLIGHT_ADDR: flight:50051
       E2E_FLIGHT_DATABASE_URL: postgres://flight:flight-local@flight-db:5432/flight?sslmode=disable
       E2E_BOOKING_DATABASE_URL: postgres://booking:booking-local@booking-db:5432/booking?sslmode=disable

@@ -117,6 +117,7 @@ func validation(s *scenario) {
 	for _, path := range []string{"/flights?origin=QAA", "/flights?origin=qaa&destination=QBB", "/flights?origin=QAA&destination=QAA", "/flights?origin=QAA&destination=QBB&date=2037-02-30", "/flights/invalid", "/bookings/invalid", "/bookings?user_id=-1", "/bookings?user_id=9223372036854775808"} {
 		s.request("GET", path, nil, "", 400)
 	}
+	s.slowPartialBody()
 	s.equal(s.countBookings(fid), 0)
 	s.equal(s.seats(fid), 4)
 	expensive := s.newFlight(2, math.MaxInt64)

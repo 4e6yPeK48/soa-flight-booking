@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	flightv1 "github.com/mchupryna/soa-flight-booking/gen/flight/v1"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func flightDB(t *testing.T) *sql.DB {
@@ -276,22 +278,183 @@ func TestPostgresReservationLifecycle(t *testing.T) {
 	})
 }
 
+func flightRedis(t *testing.T) *redis.Client {
+	t.Helper()
+	sentinels := os.Getenv("FLIGHT_TEST_REDIS_SENTINEL_ADDRS")
+	raw := os.Getenv("FLIGHT_TEST_REDIS_URL")
+	if sentinels == "" && raw == "" {
+		t.Skip("FLIGHT_TEST_REDIS_SENTINEL_ADDRS and FLIGHT_TEST_REDIS_URL are not set")
+	}
+	var cache *redis.Client
+	if sentinels != "" {
+		master := os.Getenv("FLIGHT_TEST_REDIS_MASTER_NAME")
+		if master == "" {
+			t.Fatal("FLIGHT_TEST_REDIS_MASTER_NAME is required with Sentinel")
+		}
+		cache = redis.NewFailoverClient(&redis.FailoverOptions{MasterName: master, SentinelAddrs: strings.Split(sentinels, ","), DialTimeout: 500 * time.Millisecond, DialerRetries: 1, ReadTimeout: 500 * time.Millisecond, WriteTimeout: 500 * time.Millisecond, PoolTimeout: 500 * time.Millisecond, ContextTimeoutEnabled: true, MaxRetries: -1})
+	} else {
+		opts, err := redis.ParseURL(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts.DialTimeout, opts.ReadTimeout, opts.WriteTimeout, opts.PoolTimeout = 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond, 500*time.Millisecond
+		opts.DialerRetries, opts.MaxRetries, opts.ContextTimeoutEnabled = 1, -1, true
+		cache = redis.NewClient(opts)
+	}
+	t.Cleanup(func() { cache.Close() })
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := cache.Ping(ctx).Err(); err != nil {
+		t.Fatal(err)
+	}
+	return cache
+}
+
+// Query completion is before the caller can choose a fill key again.
+// The second mutation in the SET hook is after the old payload is serialized.
+type flightReadBarrier struct{ afterRead func() }
+
+func (b *flightReadBarrier) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, b, strings.HasPrefix(data.SQL, "SELECT "+flightColumns+flightFrom))
+}
+func (b *flightReadBarrier) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	if selected, _ := ctx.Value(b).(bool); selected && b.afterRead != nil {
+		fn := b.afterRead
+		b.afterRead = nil
+		fn()
+	}
+}
+
+type lateFillHook struct{ beforeSet func(redis.Cmder) }
+
+func (h *lateFillHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h *lateFillHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+func (h *lateFillHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "set" && h.beforeSet != nil {
+			fn := h.beforeSet
+			h.beforeSet = nil
+			fn(cmd)
+			// Preserve the exact intercepted SET, even if a slow PG commit exceeds
+			// the optional production cache budget. Only this test write gets 2s.
+			writeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			return next(writeCtx, cmd)
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func TestPostgresRedisLateFill(t *testing.T) {
+	db := flightDB(t)
+	for _, method := range []string{"GetFlight", "SearchFlights"} {
+		t.Run(method, func(t *testing.T) {
+			cache := flightRedis(t)
+			id := createTestFlight(t, db, 2)
+			ctx := t.Context()
+			var namespace string
+			var revision int64
+			if err := db.QueryRowContext(ctx, `SELECT namespace::text,revision FROM cache_revision WHERE singleton`).Scan(&namespace, &revision); err != nil {
+				t.Fatal(err)
+			}
+			oldKey := fmt.Sprintf("flight:%s:%d:%s", namespace, revision, id)
+			if method == "SearchFlights" {
+				oldKey = fmt.Sprintf("search:%s:%d:SVO:LED:2040-06-03", namespace, revision)
+			}
+			if err := cache.Del(ctx, oldKey).Err(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { cache.Del(context.Background(), oldKey) })
+			mutation := New(db, nil, nil)
+			update := func(price int64) {
+				t.Helper()
+				_, err := mutation.UpdateFlight(ctx, &flightv1.UpdateFlightRequest{FlightId: id, Price: &price})
+				requireCode(t, err, codes.OK)
+			}
+			config, err := pgx.ParseConfig(os.Getenv("FLIGHT_TEST_DATABASE_URL"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			config.Tracer = &flightReadBarrier{afterRead: func() { update(20000) }}
+			readerDB := sql.OpenDB(stdlib.GetConnector(*config))
+			t.Cleanup(func() { readerDB.Close() })
+			var payload string
+			hook := &lateFillHook{beforeSet: func(cmd redis.Cmder) {
+				if key := fmt.Sprint(cmd.Args()[1]); key != oldKey {
+					t.Fatalf("late fill key=%s, want original read key=%s", key, oldKey)
+				}
+				payload = string(cmd.Args()[2].([]byte))
+				update(30000)
+			}}
+			cache.AddHook(hook)
+			server := New(readerDB, cache, nil)
+			read := func() *flightv1.Flight {
+				t.Helper()
+				if method == "GetFlight" {
+					f, err := server.GetFlight(ctx, &flightv1.GetFlightRequest{FlightId: id})
+					requireCode(t, err, codes.OK)
+					return f
+				}
+				result, err := server.SearchFlights(ctx, &flightv1.SearchFlightsRequest{Origin: "SVO", Destination: "LED", Date: "2040-06-03"})
+				requireCode(t, err, codes.OK)
+				for _, f := range result.Flights {
+					if f.Id == id {
+						return f
+					}
+				}
+				t.Fatal("fixture flight missing in search")
+				return nil
+			}
+			if f := read(); f.Price != 10000 {
+				t.Fatalf("in-flight snapshot price=%d", f.Price)
+			}
+			if payload == "" {
+				t.Fatal("old SET was not intercepted")
+			}
+			stored, err := cache.Get(ctx, oldKey).Result()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored != payload {
+				t.Fatal("late payload was not written under the old key")
+			}
+			old := new(flightv1.Flight)
+			if method == "GetFlight" {
+				if err := protojson.Unmarshal([]byte(stored), old); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				result := new(flightv1.SearchFlightsResponse)
+				if err := protojson.Unmarshal([]byte(stored), result); err != nil {
+					t.Fatal(err)
+				}
+				for _, f := range result.Flights {
+					if f.Id == id {
+						old = f
+					}
+				}
+			}
+			if old.Id != id || old.Price != 10000 {
+				t.Fatalf("late cached payload=%v, want fixture price=10000", old)
+			}
+			ttl, err := cache.TTL(ctx, oldKey).Result()
+			if err != nil || ttl <= 0 || ttl > 300*time.Second {
+				t.Fatalf("late fill ttl=%s err=%v", ttl, err)
+			}
+			if f := read(); f.Price != 30000 {
+				t.Fatalf("current read selected stale price=%d", f.Price)
+			}
+			t.Logf("old serialized payload physically written after two PG commits; TTL=%s; current price=30000", ttl)
+		})
+	}
+}
+
 func TestPostgresRedisRevisionCache(t *testing.T) {
 	db := flightDB(t)
-	raw := os.Getenv("FLIGHT_TEST_REDIS_URL")
-	if raw == "" {
-		t.Skip("FLIGHT_TEST_REDIS_URL is not set")
-	}
-	opts, e := redis.ParseURL(raw)
-	if e != nil {
-		t.Fatal(e)
-	}
-	cache := redis.NewClient(opts)
-	t.Cleanup(func() { cache.Close() })
+	cache := flightRedis(t)
 	ctx := context.Background()
-	if e := cache.Ping(ctx).Err(); e != nil {
-		t.Fatal(e)
-	}
 	s := New(db, cache, nil)
 	id := createTestFlight(t, db, 2)
 	f, e := s.GetFlight(ctx, &flightv1.GetFlightRequest{FlightId: id})

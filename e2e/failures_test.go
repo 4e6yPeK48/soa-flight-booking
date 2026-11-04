@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	flightv1 "github.com/mchupryna/soa-flight-booking/gen/flight/v1"
+	"github.com/mchupryna/soa-flight-booking/internal/api"
 )
 
 func redisOutage(s *scenario) {
@@ -123,6 +124,7 @@ func sentinelFailover(s *scenario) {
 }
 func flightOutage(s *scenario) {
 	fid := s.newFlight(3, 100)
+	existing := s.create(fid, 1, uuid.NewString())
 	since := time.Now().UTC().Format(time.RFC3339Nano)
 	id := s.stop("flight", false)
 	for i := 0; i < 6; i++ {
@@ -141,13 +143,29 @@ func flightOutage(s *scenario) {
 	if elapsed > time.Second {
 		s.t.Fatalf("OPEN response took %s", elapsed)
 	}
+	own := s.booking(existing.Id)
+	s.equal(own.Id, existing.Id)
+	s.equal(own.Status, "CONFIRMED")
+	s.equal(own.TotalPrice, 100)
+	var list []api.Booking
+	s.must(json.Unmarshal(s.request("GET", "/bookings?user_id=7182349001", nil, "", 200), &list))
+	found := false
+	for _, b := range list {
+		s.equal(b.UserId, 7182349001)
+		if b.Id == existing.Id {
+			found = true
+			s.equal(b.Status, "CONFIRMED")
+			s.equal(b.TotalPrice, 100)
+		}
+	}
+	s.equal(found, true)
 	key := uuid.NewString()
 	s.request("POST", "/bookings", requestBody(fid, 1), key, 503)
 	var bid string
 	s.must(s.bookings.QueryRow(`SELECT booking_id::text FROM booking_operations WHERE idempotency_key=$1`, key).Scan(&bid))
 	s.remember(bid)
-	s.equal(s.countBookings(fid), 0)
-	s.equal(s.seats(fid), 3)
+	s.equal(s.countBookings(fid), 1)
+	s.equal(s.seats(fid), 2)
 	s.start(id)
 	s.poll(50*time.Second, "circuit half-open probe succeeds and closes", func() bool {
 		code, _, err := s.exchange("GET", "/flights/"+fid, nil, "")
@@ -158,7 +176,10 @@ func flightOutage(s *scenario) {
 		err := s.bookings.QueryRow(`SELECT state FROM booking_operations WHERE idempotency_key=$1`, key).Scan(&state)
 		return err == nil && state == "FAILED"
 	})
-	s.equal(s.countBookings(fid), 0)
+	s.equal(s.countBookings(fid), 1)
+	s.equal(s.seats(fid), 2)
+	s.request("POST", "/bookings/"+existing.Id+"/cancel", nil, "", 200)
+	s.equal(s.booking(existing.Id).Status, "CANCELLED")
 	s.equal(s.seats(fid), 3)
 	logs, err := s.docker("logs", "--since", since, s.container("booking"))
 	s.must(err)

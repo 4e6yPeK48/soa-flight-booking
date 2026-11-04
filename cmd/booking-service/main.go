@@ -62,7 +62,7 @@ func run(logger *slog.Logger) error {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(api.OpenAPI)
 	})
-	server := &http.Server{Addr: cfg.HTTPAddr, Handler: mux, ReadHeaderTimeout: 3 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Addr: cfg.HTTPAddr, Handler: mux, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: cfg.HTTPTimeout, IdleTimeout: 60 * time.Second}
 	errs := make(chan error, 1)
 	go func() { errs <- server.ListenAndServe() }()
 	logger.Info("booking started", "http", cfg.HTTPAddr)

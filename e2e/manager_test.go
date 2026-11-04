@@ -3,13 +3,16 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -358,4 +361,43 @@ func (s *scenario) revision() string {
 	var revision int64
 	s.must(s.db.QueryRow(`SELECT namespace::text,revision FROM cache_revision WHERE singleton`).Scan(&namespace, &revision))
 	return namespace + ":" + strconv.FormatInt(revision, 10)
+}
+
+func (s *scenario) slowPartialBody() {
+	s.t.Helper()
+	timeout := 8 * time.Second
+	if value := os.Getenv("E2E_HTTP_TIMEOUT"); value != "" {
+		var err error
+		timeout, err = time.ParseDuration(value)
+		s.must(err)
+		if timeout <= 0 {
+			s.t.Fatal("E2E_HTTP_TIMEOUT must be positive")
+		}
+	}
+	target, err := url.Parse(s.base)
+	s.must(err)
+	connection, err := net.DialTimeout("tcp", target.Host, 2*time.Second)
+	s.must(err)
+	defer connection.Close()
+	s.must(connection.SetDeadline(time.Now().Add(timeout + 2*time.Second)))
+	started := time.Now()
+	_, err = fmt.Fprintf(connection, "POST /bookings HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"user_id\":", target.Host)
+	s.must(err)
+	response, err := http.ReadResponse(bufio.NewReader(connection), &http.Request{Method: "POST"})
+	elapsed := time.Since(started)
+	if err != nil {
+		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+			s.t.Fatalf("server did not bound a partial request body: %v", err)
+		}
+		if err != io.EOF && err != io.ErrUnexpectedEOF {
+			s.t.Fatalf("partial body response: %v", err)
+		}
+		s.attach("Partial body connection closed by server", map[string]any{"milliseconds": elapsed.Milliseconds()})
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 400 && response.StatusCode != 408 {
+		s.t.Fatalf("partial body status=%d, want 400 or 408", response.StatusCode)
+	}
+	s.attach("Partial body rejected by server", map[string]any{"status": response.StatusCode, "milliseconds": elapsed.Milliseconds()})
 }
