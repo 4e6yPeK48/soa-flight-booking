@@ -49,7 +49,7 @@ var runDir string
 func TestMain(m *testing.M) {
 	base := os.Getenv("E2E_ARTIFACTS_DIR")
 	if base == "" {
-		base = "../artifacts/e2e"
+		base = "../../artifacts/e2e"
 	}
 	id := strings.ToUpper(strings.ReplaceAll(uuid.NewString(), "-", "")[:10])
 	runDir = filepath.Join(base, id)

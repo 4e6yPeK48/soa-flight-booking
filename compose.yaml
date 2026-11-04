@@ -15,7 +15,7 @@ x-postgres-health: &postgres-health
 
 x-sentinel: &sentinel
   image: ${COMPOSE_PROJECT_NAME:-soa-flight-booking}-redis
-  build: ./redis
+  build: ./deploy/redis
   restart: unless-stopped
   depends_on:
     redis-master:
@@ -90,7 +90,7 @@ services:
 
   redis-master:
     image: ${COMPOSE_PROJECT_NAME:-soa-flight-booking}-redis
-    build: ./redis
+    build: ./deploy/redis
     environment:
       REDIS_MODE: master
       REDIS_HOSTNAME: redis-master
@@ -104,7 +104,7 @@ services:
 
   redis-replica:
     image: ${COMPOSE_PROJECT_NAME:-soa-flight-booking}-redis
-    build: ./redis
+    build: ./deploy/redis
     environment:
       REDIS_MODE: replica
       REDIS_HOSTNAME: redis-replica
@@ -216,7 +216,7 @@ services:
 
   e2e:
     <<: *dev
-    command: [go, test, -count=1, -p=1, -parallel=1, -tags=e2e, ./e2e]
+    command: [go, test, -count=1, -p=1, -parallel=1, -tags=e2e, ./tests/e2e]
     environment:
       E2E_BASE_URL: http://booking:8080
       E2E_HTTP_TIMEOUT: ${HTTP_TIMEOUT:-8s}

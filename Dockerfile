@@ -26,7 +26,7 @@ USER app
 CMD ["booking-service"]
 
 FROM --platform=linux/amd64 redgate/flyway:11-alpine AS flight-migrate
-COPY db/flight /flyway/sql
+COPY migrations/flight /flyway/sql
 
 FROM --platform=linux/amd64 redgate/flyway:11-alpine AS booking-migrate
-COPY db/booking /flyway/sql
+COPY migrations/booking /flyway/sql

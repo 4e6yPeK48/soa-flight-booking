@@ -1,6 +1,8 @@
 .git
 .env
+.idea
 .superpowers
+docs/superpowers
 artifacts
 bin
 node_modules
