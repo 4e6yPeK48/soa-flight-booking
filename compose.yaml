@@ -1,0 +1,238 @@
+name: ${COMPOSE_PROJECT_NAME:-soa-flight-booking}
+
+x-app: &app
+  image: ${COMPOSE_PROJECT_NAME:-soa-flight-booking}-app
+  build:
+    context: .
+    target: runtime
+  restart: unless-stopped
+
+x-postgres-health: &postgres-health
+  interval: 2s
+  timeout: 3s
+  retries: 30
+  start_period: 5s
+
+x-sentinel: &sentinel
+  image: ${COMPOSE_PROJECT_NAME:-soa-flight-booking}-redis
+  build: ./redis
+  restart: unless-stopped
+  depends_on:
+    redis-master:
+      condition: service_healthy
+    redis-replica:
+      condition: service_healthy
+  healthcheck:
+    test: [CMD-SHELL, 'test -n "$$(redis-cli -p 26379 --raw SENTINEL get-master-addr-by-name flights | head -n 1)"']
+    interval: 2s
+    timeout: 3s
+    retries: 30
+
+x-dev: &dev
+  profiles: [tests]
+  image: ${COMPOSE_PROJECT_NAME:-soa-flight-booking}-dev
+  build:
+    context: .
+    target: dev
+
+services:
+  flight-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: flight
+      POSTGRES_USER: flight
+      POSTGRES_PASSWORD: flight-local
+    volumes: [flight-db:/var/lib/postgresql/data]
+    healthcheck:
+      <<: *postgres-health
+      test: [CMD-SHELL, 'pg_isready -U flight -d flight']
+    restart: unless-stopped
+
+  booking-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: booking
+      POSTGRES_USER: booking
+      POSTGRES_PASSWORD: booking-local
+    volumes: [booking-db:/var/lib/postgresql/data]
+    healthcheck:
+      <<: *postgres-health
+      test: [CMD-SHELL, 'pg_isready -U booking -d booking']
+    restart: unless-stopped
+
+  flight-migrate:
+    platform: linux/amd64
+    build:
+      context: .
+      target: flight-migrate
+    environment:
+      FLYWAY_URL: jdbc:postgresql://flight-db:5432/flight
+      FLYWAY_USER: flight
+      FLYWAY_PASSWORD: flight-local
+    command: migrate
+    depends_on:
+      flight-db:
+        condition: service_healthy
+
+  booking-migrate:
+    platform: linux/amd64
+    build:
+      context: .
+      target: booking-migrate
+    environment:
+      FLYWAY_URL: jdbc:postgresql://booking-db:5432/booking
+      FLYWAY_USER: booking
+      FLYWAY_PASSWORD: booking-local
+    command: migrate
+    depends_on:
+      booking-db:
+        condition: service_healthy
+
+  redis-master:
+    image: ${COMPOSE_PROJECT_NAME:-soa-flight-booking}-redis
+    build: ./redis
+    environment:
+      REDIS_MODE: master
+      REDIS_HOSTNAME: redis-master
+    volumes: [redis-master:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  redis-replica:
+    image: ${COMPOSE_PROJECT_NAME:-soa-flight-booking}-redis
+    build: ./redis
+    environment:
+      REDIS_MODE: replica
+      REDIS_HOSTNAME: redis-replica
+    volumes: [redis-replica:/data]
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  sentinel-1:
+    <<: *sentinel
+    environment:
+      REDIS_MODE: sentinel
+      SENTINEL_HOSTNAME: sentinel-1
+    volumes: [sentinel-1:/data]
+  sentinel-2:
+    <<: *sentinel
+    environment:
+      REDIS_MODE: sentinel
+      SENTINEL_HOSTNAME: sentinel-2
+    volumes: [sentinel-2:/data]
+  sentinel-3:
+    <<: *sentinel
+    environment:
+      REDIS_MODE: sentinel
+      SENTINEL_HOSTNAME: sentinel-3
+    volumes: [sentinel-3:/data]
+
+  flight:
+    <<: *app
+    command: flight-service
+    environment:
+      DATABASE_URL: postgres://flight:flight-local@flight-db:5432/flight?sslmode=disable
+      GRPC_ADDR: :50051
+      HEALTH_ADDR: :9090
+      FLIGHT_API_KEY: ${FLIGHT_API_KEY:-local-demo-key}
+      REDIS_MASTER_NAME: flights
+      REDIS_SENTINEL_ADDRS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+    ports: ['127.0.0.1:${FLIGHT_PORT:-50051}:50051']
+    depends_on:
+      flight-migrate:
+        condition: service_completed_successfully
+      sentinel-1:
+        condition: service_healthy
+      sentinel-2:
+        condition: service_healthy
+      sentinel-3:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:9090/health']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  booking:
+    <<: *app
+    command: booking-service
+    environment:
+      DATABASE_URL: postgres://booking:booking-local@booking-db:5432/booking?sslmode=disable
+      HTTP_ADDR: :8080
+      FLIGHT_ADDR: flight:50051
+      FLIGHT_API_KEY: ${FLIGHT_API_KEY:-local-demo-key}
+      RPC_ATTEMPTS: ${RPC_ATTEMPTS:-3}
+      RPC_BACKOFF: ${RPC_BACKOFF:-100ms}
+      RPC_ATTEMPT_TIMEOUT: ${RPC_ATTEMPT_TIMEOUT:-500ms}
+      RPC_TIMEOUT: ${RPC_TIMEOUT:-2s}
+      CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD:-5}
+      CB_WINDOW: ${CB_WINDOW:-60s}
+      CB_OPEN_TIMEOUT: ${CB_OPEN_TIMEOUT:-15s}
+      HTTP_TIMEOUT: ${HTTP_TIMEOUT:-8s}
+      OPERATION_TIMEOUT: ${OPERATION_TIMEOUT:-10s}
+      RECOVERY_INTERVAL: ${RECOVERY_INTERVAL:-1s}
+    ports: ['127.0.0.1:${BOOKING_PORT:-8081}:8080']
+    depends_on:
+      booking-migrate:
+        condition: service_completed_successfully
+      flight:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/health']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  integration:
+    <<: *dev
+    command: [go, test, -race, -count=1, ./internal/flight/..., ./internal/booking/...]
+    environment:
+      FLIGHT_TEST_DATABASE_URL: postgres://flight:flight-local@flight-db:5432/flight?sslmode=disable
+      BOOKING_TEST_DATABASE_URL: postgres://booking:booking-local@booking-db:5432/booking?sslmode=disable
+      FLIGHT_TEST_REDIS_URL: redis://redis-master:6379
+    depends_on:
+      flight-migrate:
+        condition: service_completed_successfully
+      booking-migrate:
+        condition: service_completed_successfully
+      redis-master:
+        condition: service_healthy
+
+  e2e:
+    <<: *dev
+    command: [go, test, -count=1, -p=1, -parallel=1, -tags=e2e, ./e2e]
+    environment:
+      E2E_BASE_URL: http://booking:8080
+      E2E_FLIGHT_ADDR: flight:50051
+      E2E_FLIGHT_DATABASE_URL: postgres://flight:flight-local@flight-db:5432/flight?sslmode=disable
+      E2E_BOOKING_DATABASE_URL: postgres://booking:booking-local@booking-db:5432/booking?sslmode=disable
+      FLIGHT_API_KEY: ${FLIGHT_API_KEY:-local-demo-key}
+      E2E_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-soa-flight-booking}
+      E2E_ARTIFACTS_DIR: /artifacts
+      E2E_REDIS_SENTINELS: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      E2E_REDIS_MASTER_NAME: flights
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      booking:
+        condition: service_healthy
+
+volumes:
+  flight-db:
+  booking-db:
+  redis-master:
+  redis-replica:
+  sentinel-1:
+  sentinel-2:
+  sentinel-3:

@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package flight.v1;
+option go_package = "github.com/mchupryna/soa-flight-booking/gen/flight/v1;flightv1";
+
+import "google/protobuf/timestamp.proto";
+
+// All methods require x-api-key metadata. Missing/invalid credentials: UNAUTHENTICATED.
+// Invalid UUID, date, IATA or count: INVALID_ARGUMENT. Storage unavailable: UNAVAILABLE.
+service FlightService {
+  rpc SearchFlights(SearchFlightsRequest) returns (SearchFlightsResponse);
+  // NOT_FOUND when flight_id does not exist.
+  rpc GetFlight(GetFlightRequest) returns (Flight);
+  // RESOURCE_EXHAUSTED for insufficient seats. FAILED_PRECONDITION for an
+  // unscheduled flight, released booking_id, or replay with different parameters.
+  rpc ReserveSeats(ReserveSeatsRequest) returns (SeatReservation);
+  // Idempotent, including absent reservations: durably prevents a late Reserve.
+  rpc ReleaseReservation(ReleaseReservationRequest) returns (ReleaseReservationResponse);
+  // NOT_FOUND when flight_id does not exist. Existing booking prices are immutable.
+  rpc UpdateFlight(UpdateFlightRequest) returns (Flight);
+}
+
+enum FlightStatus {
+  FLIGHT_STATUS_UNSPECIFIED = 0;
+  SCHEDULED = 1;
+  DEPARTED = 2;
+  CANCELLED = 3;
+  COMPLETED = 4;
+}
+enum ReservationStatus {
+  RESERVATION_STATUS_UNSPECIFIED = 0;
+  ACTIVE = 1;
+  RELEASED = 2;
+  EXPIRED = 3;
+}
+message Flight {
+  string id = 1;
+  string airline = 2;
+  string flight_number = 3;
+  string origin = 4;
+  string destination = 5;
+  google.protobuf.Timestamp departure_time = 6;
+  google.protobuf.Timestamp arrival_time = 7;
+  int32 total_seats = 8;
+  int32 available_seats = 9;
+  // RUB kopecks, never floating point.
+  int64 price = 10;
+  FlightStatus status = 11;
+}
+message SearchFlightsRequest {
+  string origin = 1;
+  string destination = 2;
+  // Optional YYYY-MM-DD, UTC calendar day; empty means all dates.
+  string date = 3;
+}
+message SearchFlightsResponse { repeated Flight flights = 1; }
+message GetFlightRequest { string flight_id = 1; }
+message ReserveSeatsRequest {
+  string flight_id = 1;
+  int32 seat_count = 2;
+  string booking_id = 3;
+}
+message SeatReservation {
+  string booking_id = 1;
+  string flight_id = 2;
+  int32 seat_count = 3;
+  ReservationStatus status = 4;
+}
+message ReleaseReservationRequest { string booking_id = 1; }
+message ReleaseReservationResponse {
+  string booking_id = 1;
+  ReservationStatus status = 2;
+}
+message UpdateFlightRequest {
+  string flight_id = 1;
+  optional int64 price = 2;
+  optional FlightStatus status = 3;
+}

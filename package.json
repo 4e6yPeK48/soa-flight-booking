@@ -1,0 +1,15 @@
+{
+  "name": "soa-flight-booking-e2e-reports",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test scripts/*.test.mjs",
+    "e2e:report": "node scripts/e2e-report.mjs generate",
+    "e2e:open": "node scripts/e2e-report.mjs open"
+  },
+  "devDependencies": {
+    "allure": "3.21.0"
+  }
+}

@@ -1,0 +1,7 @@
+.git
+.env
+.superpowers
+artifacts
+bin
+node_modules
+*.log
