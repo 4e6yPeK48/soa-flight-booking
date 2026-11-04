@@ -7,15 +7,16 @@ Booking владеет бронированием и снимком цены; Fl
 ДЗ-1: Users, Catalog, Feed, Orders, Payments, Notifications, отдельные БД, HTTP/Kafka. ДЗ-2: Go HTTP-монолит, общая PostgreSQL. Здесь Orders/Catalog соответствуют Booking/Flight; авиабилеты и gRPC заданы условием. Общую транзакцию заменяют журнал и компенсация. Оба приложения собираются независимо от прежнего репозитория.
 
 ```mermaid
+%%{init: {"wrap": true, "c4": {"width": 130, "c4ShapePadding": 10, "c4ShapeMargin": 40, "messageFontSize": 12}}}%%
 C4Container
     Person(client, "Клиент", "curl или HTTP-клиент")
     System_Boundary(system, "Flight Booking / Docker Compose") {
         Container(booking, "Booking Service", "Go / REST", "Бронирование, цена, recovery")
         Container(flight, "Flight Service", "Go / gRPC", "Рейсы, места, резервации")
+        Container(sentinel, "3 Redis Sentinel", "Redis Sentinel", "Кворум 2, выбор master")
         ContainerDb(bookingdb, "Booking PostgreSQL", "PostgreSQL 17", "Бронирования и журнал операций")
         ContainerDb(flightdb, "Flight PostgreSQL", "PostgreSQL 17", "Рейсы, резервации, отмены, ревизия кеша")
         ContainerDb(redis, "Redis master + replica", "Redis", "Данные чтения, TTL 300s")
-        Container(sentinel, "3 Redis Sentinel", "Redis Sentinel", "Кворум 2, выбор master")
     }
     Rel(client, booking, "REST JSON", "HTTP :8081 на хосте")
     Rel(booking, flight, "FlightService + x-api-key", "gRPC :50051")
@@ -24,6 +25,13 @@ C4Container
     Rel(flight, redis, "Чтение и заполнение кеша", "Redis protocol")
     Rel(flight, sentinel, "Обнаружение master", "Sentinel protocol")
     Rel(sentinel, redis, "Мониторинг и failover")
+    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+    UpdateRelStyle(client, booking, $offsetX="-80", $offsetY="-30")
+    UpdateRelStyle(booking, flight, $offsetX="-80", $offsetY="-100")
+    UpdateRelStyle(flight, sentinel, $offsetX="-60", $offsetY="-100")
+    UpdateRelStyle(flight, redis, $offsetX="-20", $offsetY="-30")
+    UpdateRelStyle(sentinel, redis, $offsetX="10", $offsetY="-10")
+    UpdateRelStyle(flight, flightdb, $offsetX="-130", $offsetY="15")
 ```
 
 Compose: по одному приложению, две PostgreSQL, Flyway-миграции перед стартом. Все методы Flight требуют API key; gRPC — plaintext без TLS. REST без аутентификации пользователя.
@@ -134,20 +142,20 @@ sequenceDiagram
     participant F as Flight
     participant FD as Flight PostgreSQL
     C->>B: POST /bookings + необязательный Idempotency-Key
-    B->>BD: CREATE PENDING + request + booking_id; COMMIT
+    B->>BD: CREATE PENDING + request + booking_id, COMMIT
     B->>F: GetFlight
     F-->>B: Рейс и цена в копейках
     B->>F: ReserveSeats(booking_id, flight_id, count)
-    F->>FD: Advisory lock booking_id; SELECT flight FOR UPDATE
-    F->>FD: Уменьшить места + ACTIVE + revision; COMMIT
+    F->>FD: Advisory lock booking_id, SELECT flight FOR UPDATE
+    F->>FD: Уменьшить места + ACTIVE + revision, COMMIT
     F-->>B: Резерв
     alt Успешная финализация
-        B->>BD: Lock journal; INSERT CONFIRMED + CREATE DONE; COMMIT
+        B->>BD: Lock journal, INSERT CONFIRMED + CREATE DONE, COMMIT
         B-->>C: 201 + бронирование
     else Ошибка или истёкшее незавершённое намерение
         B->>BD: CREATE COMPENSATING
         B->>F: ReleaseReservation(booking_id), с повторами
-        F->>FD: Tombstone + возврат ACTIVE + RELEASED + revision; COMMIT
+        F->>FD: Tombstone + возврат ACTIVE + RELEASED + revision, COMMIT
         B->>BD: CREATE FAILED
         Note over B,FD: Recovery продолжает после перезапуска Booking
         B->>F: Возможный поздний ReserveSeats с тем же booking_id
@@ -201,4 +209,4 @@ Breaker общий для методов одного target и учитывае
 
 OPEN даёт REST 503, RPC deadline — 504. HTTP_TIMEOUT ограничивает также чтение неполного тела. Синхронная компенсация получает отдельный background-бюджет, поэтому полный ответ может длиться дольше 8s. Истечение HTTP-контекста не удаляет намерение: его завершает recovery.
 
-В [документации Avito service-item](https://docs.k.avito.ru/service-item/circuit_breaker/) breaker защищает исходящий HTTP-клиент; здесь — gRPC interceptor. Аналогия ограничена принципом, без переноса продакшен-протокола и порогов.
+По рабочему опыту circuit breaker размещён в исходящем клиенте зависимости: gRPC interceptor применяет одну политику ко всем методам Flight.

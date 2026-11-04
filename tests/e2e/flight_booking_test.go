@@ -110,7 +110,7 @@ func validation(s *scenario) {
 		test.change(body)
 		s.request("POST", "/bookings", body, "", 400)
 	}
-	for _, body := range []string{"{", "null", "[]", `{"user_id":1} {}`, `{"user_id":1,"user_id":2}`} {
+	for _, body := range []string{"{", "null", "[]", `{"user_id":1} {}`} {
 		s.raw("POST", "/bookings", []byte(body), "", 400)
 	}
 	s.request("POST", "/bookings", requestBody(fid, 1), "invalid-key", 400)
@@ -120,6 +120,20 @@ func validation(s *scenario) {
 	s.slowPartialBody()
 	s.equal(s.countBookings(fid), 0)
 	s.equal(s.seats(fid), 4)
+	body := `{"user_id":1,"user_id":2,"flight_id":"` + fid + `","passenger_name":"E2E Passenger","passenger_email":"e2e@example.test","seat_count":1}`
+	key := uuid.NewString()
+	var b api.Booking
+	s.must(json.Unmarshal(s.raw("POST", "/bookings", []byte(body), key, 201), &b))
+	s.remember(b.Id)
+	s.equal(b.UserId, 2)
+	s.equal(s.booking(b.Id).UserId, 2)
+	replay := requestBody(fid, 1)
+	replay["user_id"] = 2
+	var repeated api.Booking
+	s.must(json.Unmarshal(s.request("POST", "/bookings", replay, key, 201), &repeated))
+	s.equal(repeated.Id, b.Id)
+	s.equal(s.countBookings(fid), 1)
+	s.equal(s.seats(fid), 3)
 	expensive := s.newFlight(2, math.MaxInt64)
 	s.request("POST", "/bookings", requestBody(expensive, 2), uuid.NewString(), 502)
 	s.equal(s.countBookings(expensive), 0)

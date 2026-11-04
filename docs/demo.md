@@ -1,4 +1,4 @@
-# Защита Flight Booking
+# Демо Flight Booking
 
 Демонстрация на 15–20 минут. Заранее выполните make up и make e2e в отдельном Compose-проекте, затем сформируйте Allure-отчёт по [инструкции QA](qa.md). Команды демонстрации выполняйте в терминале с теми же экспортированными COMPOSE_PROJECT_NAME, BOOKING_PORT и FLIGHT_PORT.
 
@@ -27,7 +27,7 @@ docker compose exec flight-db psql -U flight -d flight -c \
 
 В Allure откройте Last seat has exactly one concurrent winner: 12 параллельных вызовов, один победитель, один ACTIVE, нулевой остаток. Покажите SELECT FOR UPDATE и транзакцию изменения остатка вместе с резервом.
 
-В Price snapshot and cache invalidation покажите сохранённую цену брони после UpdateFlight, свежие Get/Search и исключение CANCELLED-рейса из поиска. По логам и TTL проверьте кеш. Объясните компромисс: PostgreSQL revision нужна даже при cache hit, зато старый payload после мутации остаётся только под старым ключом.
+В Price snapshot and cache invalidation покажите сохранённую цену брони после UpdateFlight, свежие Get/Search и исключение CANCELLED-рейса из поиска. По логам и TTL проверьте кеш. Объясните компромисс: даже cache hit требует чтения revision из PostgreSQL, а общая revision инвалидирует кеш всех рейсов. Взамен старый payload после мутации остаётся только под старым ключом.
 
 ## 10–15 минут: сбои
 
@@ -58,4 +58,4 @@ Fault-сценарии останавливают контейнеры и мог
 | Что остаётся при отказе PostgreSQL? | Кеш требует revision из БД. PostgreSQL и приложения не реплицированы; Sentinel покрывает Redis. |
 | Защищает ли user_id чужие брони? | Нет, REST не аутентифицирует пользователя. |
 
-Числа retry, бюджеты, семантика breaker, граница COMMIT-тестов и аналогия с исходящим клиентом Avito собраны в архитектуре. Сопоставьте демонстрацию с десятью пунктами матрицы QA.
+Параметры retry, бюджеты, семантика breaker и граница COMMIT-тестов собраны в архитектуре. Матрица QA связывает показанные сценарии с требованиями задания.

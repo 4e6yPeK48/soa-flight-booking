@@ -35,7 +35,7 @@
 | Неполный HTTP body | E2E REST strict JSON and input validation: реальное TCP-соединение; 400/408 или закрытие до клиентского deadline |
 | Неизвестный исход COMMIT | TestPostgresCreateLostCommitAcknowledgment, TestPostgresReserveLostCommitAcknowledgment: CONFIRMED без Release, единственный резерв, одно списание и увеличение revision |
 | Задержка кеша | TestPostgresCacheOutageFitsRPCDeadline: при остановленном/зависшем Sentinel или зависшем Redis Get/Search успевают перейти на PostgreSQL |
-| Деньги и входные данные | TestCheckedPrice; E2E REST strict JSON and input validation: точное умножение копеек, переполнение отклонено до резерва |
+| Деньги и входные данные | TestCheckedPrice; E2E REST strict JSON and input validation: точное умножение копеек, переполнение отклонено до резерва; полный валидный JSON с повтором user_id сохраняет последнее значение |
 | Поиск | TestPostgresReservationLifecycle; E2E Search uses UTC dates and scheduled status: день UTC, только SCHEDULED, стабильный порядок |
 
 COMMIT-fault в internal/testdb/commitfault.go возвращает driver.ErrBadConn после настоящего COMMIT; реальный обрыв TCP на этой границе не воспроизводится. Booking-тесты используют реальную PostgreSQL и подменённый Flight-клиент. Flight-тесты — PostgreSQL и Redis.
