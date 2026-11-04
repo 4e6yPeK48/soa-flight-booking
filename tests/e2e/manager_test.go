@@ -353,7 +353,18 @@ func (s *scenario) redis() *redis.Client {
 	sentinels := strings.Split(required(s.t, "E2E_REDIS_SENTINELS"), ",")
 	c := redis.NewFailoverClient(&redis.FailoverOptions{MasterName: required(s.t, "E2E_REDIS_MASTER_NAME"), SentinelAddrs: sentinels, DialTimeout: 500 * time.Millisecond, DialerRetries: 1, ReadTimeout: 500 * time.Millisecond, WriteTimeout: 500 * time.Millisecond, PoolTimeout: 500 * time.Millisecond, ContextTimeoutEnabled: true, MaxRetries: -1})
 	s.t.Cleanup(func() { c.Close() })
-	s.must(c.Ping(s.t.Context()).Err())
+	var lastError error
+	defer func() {
+		if s.t.Failed() {
+			s.sentinelDiagnostics(c, fmt.Sprint(lastError))
+		}
+	}()
+	s.poll(15*time.Second, "Sentinel-aware Redis client ready", func() bool {
+		ctx, cancel := context.WithTimeout(s.t.Context(), 1500*time.Millisecond)
+		defer cancel()
+		lastError = c.Ping(ctx).Err()
+		return lastError == nil
+	})
 	return c
 }
 func (s *scenario) revision() string {
